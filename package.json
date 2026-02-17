@@ -1,13 +1,13 @@
 {
   "name": "moviebox",
   "version": "1.0.0",
-  "description": "",
+  "description": "A Telegram bot running 24/7 on railway",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node bot.js"
   },
   "keywords": [],
-  "author": "",
+  "author": "patrickrosbin-netizen",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
