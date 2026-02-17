@@ -2,7 +2,7 @@
   "name": "moviebox",
   "version": "1.0.0",
   "description": "A Telegram bot running 24/7 on railway",
-  "main": "index.js",
+  "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
   },
