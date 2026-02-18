@@ -2,55 +2,64 @@ const TelegramBot = require("node-telegram-bot-api");
 const axios = require("axios");
 
 const bot = new TelegramBot(process.env.BOT, { polling: true });
-
-const TMDB_API = "d97d11510f77aa1f9e5b53c397e2613f";
+const TMDB_API = process.env.TMDB_API;
 
 bot.on("message", async (msg) => {
 
     const chatId = msg.chat.id;
-    const movieName = msg.text;
+    const query = msg.text;
 
     try {
 
-        // ---------- Search Movie ----------
-        const movieRes = await axios.get(
-            `https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API}&query=${encodeURIComponent(movieName)}`
+        // ⭐ Multi Search (Movies + TV Series)
+        const search = await axios.get(
+            `https://api.themoviedb.org/3/search/multi?api_key=${TMDB_API}&query=${encodeURIComponent(query)}`
         );
 
-        const movie = movieRes.data.results[0];
+        const result = search.data.results[0];
 
-        if (!movie) {
-            return bot.sendMessage(chatId, "❌ Movie not found");
+        if (!result) {
+            return bot.sendMessage(chatId, "❌ No results found");
         }
 
-        // ---------- Movie Info ----------
-        const poster = `https://image.tmdb.org/t/p/w500${movie.poster_path}`;
-        const year = movie.release_date?.split("-")[0] || "Unknown";
-        const rating = movie.vote_average || "N/A";
-        const description = movie.overview || "No description available";
+        // ⭐ Detect Movie OR Series
+        const title = result.title || result.name;
+        const release = result.release_date || result.first_air_date;
+        const year = release ? release.split("-")[0] : "Unknown";
+        const rating = result.vote_average || "N/A";
+        const description = result.overview || "No description available";
 
-        // ---------- Archive.org Search ----------
-        let archiveLink = "Not available";
+        const poster = result.poster_path
+            ? `https://image.tmdb.org/t/p/w500${result.poster_path}`
+            : null;
+
+        // ⭐ Archive.org Download Search
+        let downloadLink = "Not available";
 
         try {
-            const archiveRes = await axios.get(
-                `https://archive.org/advancedsearch.php?q=${encodeURIComponent(movie.title)}&output=json`
+
+            const archive = await axios.get(
+                `https://archive.org/advancedsearch.php?q=${encodeURIComponent(title)}&output=json`
             );
 
-            if (archiveRes.data.response.docs.length > 0) {
-                archiveLink = `https://archive.org/details/${archiveRes.data.response.docs[0].identifier}`;
+            if (archive.data.response.docs.length > 0) {
+
+                const id = archive.data.response.docs[0].identifier;
+
+                downloadLink = `https://archive.org/details/${id}`;
             }
 
         } catch {
-            archiveLink = "Not available";
+            downloadLink = "Not available";
         }
 
-        // ---------- JustWatch Link ----------
-        const justWatch = `https://www.justwatch.com/us/search?q=${encodeURIComponent(movie.title)}`;
+        // ⭐ Streaming Link
+        const streamingLink =
+            `https://www.justwatch.com/us/search?q=${encodeURIComponent(title)}`;
 
-        // ---------- Final Message ----------
+        // ⭐ Final Message
         const message = `
-🎬 *${movie.title}*
+🎬 ${title}
 
 📅 Year: ${year}
 ⭐ Rating: ${rating}/10
@@ -58,21 +67,24 @@ bot.on("message", async (msg) => {
 📝 Description:
 ${description}
 
-📥 Download (Public Domain):
-${archiveLink}
+📥 Download:
+${downloadLink}
 
-▶ Watch Legally:
-${justWatch}
+▶ Watch:
+${streamingLink}
 `;
 
-        bot.sendPhoto(chatId, poster, {
-            caption: message,
-            parse_mode: "Markdown"
-        });
+        if (poster) {
+            bot.sendPhoto(chatId, poster, { caption: message });
+        } else {
+            bot.sendMessage(chatId, message);
+        }
 
     } catch (error) {
+
         console.log(error);
-        bot.sendMessage(chatId, "⚠️ Error fetching movie");
+        bot.sendMessage(chatId, "⚠️ Error searching movie/series");
+
     }
 
 });
