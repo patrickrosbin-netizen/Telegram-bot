@@ -1,6 +1,10 @@
 const TelegramBot = require("node-telegram-bot-api");
 const axios = require("axios");
 
+// === DEBUG LOGS FOR ENVIRONMENT VARIABLES ===
+console.log("BOT_TOKEN:", process.env.BOT_TOKEN ? "Loaded" : "Missing");
+console.log("TMDB_KEY:", process.env.TMDB_KEY ? "Loaded" : "Missing");
+
 // Load environment variables from Railway
 const token = process.env.BOT_TOKEN;
 const TMDB_KEY = process.env.TMDB_KEY;
