@@ -16,12 +16,13 @@ bot.on("message", async (msg) => {
             `https://api.themoviedb.org/3/search/multi?api_key=${TMDB_API}&query=${encodeURIComponent(query)}`
         );
 
-        const result = search.data.results[0];
+        const result = search.data.results;
 
         if (!result) {
             return bot.sendMessage(chatId, "❌ No results found");
         }
 
+const result = results[0];
         // ⭐ Detect Movie OR Series
         const title = result.title || result.name;
         const release = result.release_date || result.first_air_date;
