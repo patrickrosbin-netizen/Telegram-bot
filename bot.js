@@ -13,7 +13,7 @@ bot.on("message", async (msg) => {
 
         // ⭐ Multi Search (Movies + TV Series)
         const search = await axios.get(
-            `https://api.themoviedb.org/3/search/multi?api_key=${TMDB_API}&query=${encodeURIComponent(query)}`
+            `https://api.themoviedb.org/3/search/multi?api_key=${d97d11510f77aa1f9e5b53c397e2613>}&query=${encodeURIComponent(query)}`
         );
 
         const result = search.data.results;
