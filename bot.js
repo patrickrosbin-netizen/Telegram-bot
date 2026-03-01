@@ -1,6 +1,3 @@
-const TelegramBot = require("node-telegram-bot-api");
-const axios = require("axios");
-
 const fs = require("fs");
 
 let movies = {};
@@ -8,6 +5,8 @@ let movies = {};
 if (fs.existsSync("movies.json")) {
   movies = JSON.parse(fs.readFileSync("movies.json"));
 }
+const TelegramBot = require("node-telegram-bot-api");
+const axios = require("axios");
 
 // Load environment variables from Railway
 const token = process.env.BOT_TOKEN;
