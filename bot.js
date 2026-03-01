@@ -1,25 +1,25 @@
-require('dotenv').config(); // Load .env variables
+require('dotenv').config(); // Must be first
 const TelegramBot = require('node-telegram-bot-api');
 const { Pool } = require('pg');
 
-// ===== CHECK ENV VARIABLES =====
-if (!process.env.BOT_TOKEN || !process.env.ADMIN_ID || !process.env.DATABASE_URL) {
-  console.error("Missing BOT_TOKEN, ADMIN_ID, or DATABASE_URL in .env");
+// ===== ENV CHECK =====
+const { BOT_TOKEN, ADMIN_ID, DATABASE_URL } = process.env;
+if (!BOT_TOKEN || !ADMIN_ID || !DATABASE_URL) {
+  console.error("❌ Missing BOT_TOKEN, ADMIN_ID, or DATABASE_URL in .env");
   process.exit(1);
 }
 
-const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
-const ADMIN_ID = process.env.ADMIN_ID;
+// ===== INIT BOT =====
+const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+const ADMIN = ADMIN_ID.toString();
 
-// ===== POSTGRESQL POOL =====
+// ===== POSTGRES POOL =====
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL.includes("localhost") 
-    ? false 
-    : { rejectUnauthorized: false }
+  connectionString: DATABASE_URL,
+  ssl: { rejectUnauthorized: false }, // Required for Railway
 });
 
-// ===== CREATE TABLE IF NOT EXISTS =====
+// ===== CREATE TABLE =====
 (async () => {
   try {
     await pool.query(`
@@ -30,105 +30,80 @@ const pool = new Pool({
         caption TEXT
       )
     `);
-    console.log("Database connected ✅");
+    console.log("✅ Database connected");
   } catch (err) {
-    console.error("DB error:", err.message);
+    console.error("❌ DB connection error:", err.message);
     process.exit(1);
   }
 })();
 
-// ===============================
-// MANUAL ADD MOVIE
-// ===============================
-bot.onText(/\/addmovie (.+)/, async (msg, match) => {
-  if (msg.from.id.toString() !== ADMIN_ID) {
-    return bot.sendMessage(msg.chat.id, "Only admin can add movies.");
-  }
+// ===== MANUAL ADD MOVIE =====
+bot.onText(/\/addmovie (.+)/, (msg, match) => {
+  if (msg.from.id.toString() !== ADMIN) return bot.sendMessage(msg.chat.id, "Only admin can add movies.");
 
   const movieName = match[1].toLowerCase();
   bot.sendMessage(msg.chat.id, "Send the video now.");
 
+  // Listen for next video
   bot.once("video", async (videoMsg) => {
+    if (!videoMsg.video) return bot.sendMessage(msg.chat.id, "❌ No video detected.");
     try {
       await pool.query(
         "INSERT INTO movies (name, file_id, caption) VALUES ($1,$2,$3)",
-        [
-          movieName,
-          videoMsg.video.file_id,
-          videoMsg.caption || ""
-        ]
+        [movieName, videoMsg.video.file_id, videoMsg.caption || ""]
       );
-      bot.sendMessage(msg.chat.id, "Movie saved permanently ✅");
+      bot.sendMessage(msg.chat.id, "✅ Movie saved permanently");
     } catch (err) {
-      bot.sendMessage(msg.chat.id, "Movie already exists.");
+      bot.sendMessage(msg.chat.id, "❌ Movie already exists or DB error.");
+      console.error("Add movie error:", err.message);
     }
   });
 });
 
-// ===============================
-// AUTO SAVE FROM PRIVATE CHANNEL
-// ===============================
+// ===== CHANNEL AUTO SAVE =====
 bot.on("channel_post", async (msg) => {
   if (!msg.video || !msg.caption) return;
-
-  // Optional: Use a hashtag as the movie name
   const match = msg.caption.match(/#(\w+)/);
   if (!match) return;
 
   const movieName = match[1].toLowerCase();
-  const fileId = msg.video.file_id;
-
   try {
     await pool.query(
       "INSERT INTO movies (name, file_id, caption) VALUES ($1,$2,$3)",
-      [movieName, fileId, msg.caption]
+      [movieName, msg.video.file_id, msg.caption]
     );
-    console.log("Saved from channel:", movieName);
+    console.log("✅ Saved from channel:", movieName);
   } catch (err) {
-    console.log("Already exists:", movieName);
+    console.log("Already exists or DB error:", movieName);
   }
 });
 
-// ===============================
-// SEARCH MOVIE
-// ===============================
+// ===== SEARCH MOVIE =====
 bot.on("message", async (msg) => {
   if (!msg.text || msg.text.startsWith("/")) return;
 
   try {
-    const result = await pool.query(
-      "SELECT * FROM movies WHERE name ILIKE $1",
-      [`%${msg.text.toLowerCase()}%`]
-    );
-
-    if (result.rows.length === 0) {
-      return bot.sendMessage(msg.chat.id, "Movie not found ❌");
-    }
+    const result = await pool.query("SELECT * FROM movies WHERE name ILIKE $1", [`%${msg.text.toLowerCase()}%`]);
+    if (result.rows.length === 0) return bot.sendMessage(msg.chat.id, "❌ Movie not found");
 
     const movie = result.rows[0];
-    bot.sendVideo(msg.chat.id, movie.file_id, {
-      caption: movie.caption || "Enjoy 🎬"
-    });
-
+    bot.sendVideo(msg.chat.id, movie.file_id, { caption: movie.caption || "🎬 Enjoy!" });
   } catch (err) {
     console.error("Search error:", err.message);
+    bot.sendMessage(msg.chat.id, "❌ Error retrieving movie");
   }
 });
 
-// ===============================
-// ADMIN STATS
-// ===============================
+// ===== ADMIN STATS =====
 bot.onText(/\/stats/, async (msg) => {
-  if (msg.from.id.toString() !== ADMIN_ID) {
-    return bot.sendMessage(msg.chat.id, "Only admin allowed.");
-  }
-
+  if (msg.from.id.toString() !== ADMIN) return bot.sendMessage(msg.chat.id, "Only admin allowed.");
   try {
     const total = await pool.query("SELECT COUNT(*) FROM movies");
     bot.sendMessage(msg.chat.id, `📊 Total Movies: ${total.rows[0].count}`);
   } catch (err) {
-    bot.sendMessage(msg.chat.id, "Error fetching stats.");
+    console.error("Stats error:", err.message);
+    bot.sendMessage(msg.chat.id, "❌ Error fetching stats");
   }
 });
 
-console.log("Bot is running 🚀");
+console.log("🚀 Bot is running");
