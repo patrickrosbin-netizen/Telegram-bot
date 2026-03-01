@@ -1,157 +1,119 @@
+require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
 const { Pool } = require("pg");
 
-const token = process.env.BOT_TOKEN;
-const bot = new TelegramBot(token, { polling: true });
+const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 
-const ADMIN_ID = 7977914980; // replace with your Telegram ID
-
-// ---------- PostgreSQL Setup ----------
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-// Create movies table if it doesn't exist
+// ===== CREATE TABLE IF NOT EXISTS =====
 (async () => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS movies (
       id SERIAL PRIMARY KEY,
-      key TEXT UNIQUE,
-      title TEXT,
-      file_id TEXT,
-      link TEXT,
-      poster TEXT,
-      description TEXT,
-      downloads INTEGER DEFAULT 0
+      name TEXT UNIQUE NOT NULL,
+      file_id TEXT NOT NULL,
+      caption TEXT
     )
   `);
-  console.log("Database ready ✅");
 })();
 
-// ---------- Admin Add Movie Flow ----------
-const pendingMovies = {}; // stores per-admin pending movies
+// ===== ADMIN ID =====
+const ADMIN_ID = process.env.ADMIN_ID;
 
-bot.on("message", async (msg) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  const text = msg.text ? msg.text.trim() : "";
+// ===============================
+// ADD MOVIE MANUALLY
+// ===============================
+bot.onText(/\/addmovie (.+)/, async (msg, match) => {
+  if (msg.from.id.toString() !== ADMIN_ID) {
+    return bot.sendMessage(msg.chat.id, "Only admin can add movies.");
+  }
 
+  const movieName = match[1].toLowerCase();
+
+  bot.sendMessage(msg.chat.id, "Send the video now.");
+
+  bot.once("video", async (videoMsg) => {
+    const fileId = videoMsg.video.file_id;
+    const caption = videoMsg.caption || "";
+
+    try {
+      await pool.query(
+        "INSERT INTO movies (name, file_id, caption) VALUES ($1,$2,$3)",
+        [movieName, fileId, caption]
+      );
+
+      bot.sendMessage(msg.chat.id, "Movie permanently saved ✅");
+    } catch (err) {
+      bot.sendMessage(msg.chat.id, "Movie already exists.");
+    }
+  });
+});
+
+// ===============================
+// AUTO SAVE FROM CHANNEL
+// ===============================
 bot.on("channel_post", async (msg) => {
   if (!msg.video || !msg.caption) return;
 
-  const caption = msg.caption.trim();
+  const match = msg.caption.match(/#(\w+)/);
+  if (!match) return;
 
-  if (!caption.startsWith("#")) return;
-
-  const movieKey = caption.slice(1).toLowerCase();
+  const movieName = match[1].toLowerCase();
   const fileId = msg.video.file_id;
+  const caption = msg.caption;
 
-  await pool.query(
-    `INSERT INTO movies (key, title, file_id)
-     VALUES ($1,$2,$3)
-     ON CONFLICT (key)
-     DO UPDATE SET file_id=$3`,
-    [movieKey, movieKey, fileId]
+  try {
+    await pool.query(
+      "INSERT INTO movies (name, file_id, caption) VALUES ($1,$2,$3)",
+      [movieName, fileId, caption]
+    );
+
+    console.log("Saved from channel:", movieName);
+  } catch (err) {
+    console.log("Already exists:", movieName);
+  }
+});
+
+// ===============================
+// SEARCH MOVIE
+// ===============================
+bot.on("message", async (msg) => {
+  if (!msg.text || msg.text.startsWith("/")) return;
+
+  const search = msg.text.toLowerCase();
+
+  const result = await pool.query(
+    "SELECT * FROM movies WHERE name ILIKE $1",
+    [`%${search}%`]
   );
 
-  console.log("Saved from channel:", movieKey);
+  if (result.rows.length === 0) {
+    return bot.sendMessage(msg.chat.id, "Movie not found ❌");
+  }
+
+  const movie = result.rows[0];
+
+  bot.sendVideo(msg.chat.id, movie.file_id, {
+    caption: movie.caption || "Enjoy 🎬"
+  });
 });
 
-  // ---------- Admin /addmovie command ----------
-  if (text.startsWith("/addmovie") && userId === ADMIN_ID) {
-    const args = text.split(" ").slice(1);
-    if (!args[0]) return bot.sendMessage(chatId, "Usage: /addmovie moviename");
-
-    pendingMovies[userId] = {
-      key: args.join(" ").toLowerCase(),
-      file_id: null,
-      link: null,
-      poster: null,
-      description: null,
-      step: "videoOrLink"
-    };
-
-    return bot.sendMessage(chatId, "🎬 Send small video or type a download link for the movie");
+// ===============================
+// ADMIN STATS
+// ===============================
+bot.onText(/\/stats/, async (msg) => {
+  if (msg.from.id.toString() !== ADMIN_ID) {
+    return bot.sendMessage(msg.chat.id, "Only admin allowed.");
   }
 
-  // ---------- Admin Add Flow ----------
-  if (pendingMovies[userId]) {
-    const movie = pendingMovies[userId];
+  const total = await pool.query("SELECT COUNT(*) FROM movies");
 
-    switch (movie.step) {
-      case "videoOrLink":
-        if (msg.video) {
-          movie.file_id = msg.video.file_id;
-        } else if (text) {
-          movie.link = text;
-        } else {
-          return;
-        }
-        movie.step = "poster";
-        return bot.sendMessage(chatId, "📸 Send poster URL or type 'skip'");
-
-      case "poster":
-        movie.poster = text.toLowerCase() === "skip" ? null : text;
-        movie.step = "description";
-        return bot.sendMessage(chatId, "📝 Send description or type 'skip'");
-
-      case "description":
-        movie.description = text.toLowerCase() === "skip" ? null : text;
-
-        // Save to database
-        await pool.query(
-          `INSERT INTO movies (key, title, file_id, link, poster, description)
-           VALUES ($1,$2,$3,$4,$5,$6)
-           ON CONFLICT (key) DO UPDATE
-           SET file_id=$3, link=$4, poster=$5, description=$6`,
-          [
-            movie.key,
-            movie.key,
-            movie.file_id,
-            movie.link,
-            movie.poster,
-            movie.description
-          ]
-        );
-
-        bot.sendMessage(chatId, `✅ Movie "${movie.key}" saved permanently!`);
-        delete pendingMovies[userId];
-        return;
-    }
-  }
-
-  // ---------- Search Movie ----------
-  if (!text.startsWith("/")) {
-    const result = await pool.query("SELECT * FROM movies WHERE key = $1", [text.toLowerCase()]);
-    if (result.rows.length === 0) return;
-
-    const movie = result.rows[0];
-    const caption =
-      `🎬 ${movie.title}` + (movie.description ? `\n\n📝 ${movie.description}` : "");
-
-    // Send video if file_id exists
-    if (movie.file_id) {
-      await pool.query("UPDATE movies SET downloads = downloads + 1 WHERE key = $1", [movie.key]);
-      return bot.sendVideo(chatId, movie.file_id, { caption });
-    }
-
-    // Send download link if no file_id
-    if (movie.link) {
-      await pool.query("UPDATE movies SET downloads = downloads + 1 WHERE key = $1", [movie.key]);
-      return bot.sendMessage(chatId, `${caption}\n\n⬇️ Download link: ${movie.link}`);
-    }
-  }
-
-  // ---------- Admin Stats ----------
-  if (text === "/stats" && userId === ADMIN_ID) {
-    const result = await pool.query("SELECT title, downloads FROM movies");
-    let message = "📊 Admin Stats\n\n";
-    result.rows.forEach((row) => {
-      message += `${row.title}: ${row.downloads} downloads\n`;
-    });
-    return bot.sendMessage(chatId, message);
-  }
+  bot.sendMessage(
+    msg.chat.id,
+    `📊 Total Movies: ${total.rows[0].count}`
+  );
 });
-
-console.log("🚀 PostgreSQL Movie Bot Running");
