@@ -15,7 +15,7 @@ const ADMIN_ID = 7977914980;
 let pendingMovie = null;
 
 // =======================
-// 3️⃣ LOAD MOVIES.JSON
+// 3️⃣ LOAD MOVIES.JSON SAFELY
 // =======================
 let movies = {};
 if (fs.existsSync("movies.json")) {
@@ -33,7 +33,8 @@ if (fs.existsSync("movies.json")) {
 bot.onText(/\/addmovie (.+)/, (msg, match) => {
   const chatId = msg.chat.id;
 
-  if (chatId !== ADMIN_ID) {
+  // Only admin can add movies
+  if (msg.from.id !== ADMIN_ID) {
     return bot.sendMessage(chatId, "❌ Not authorized.");
   }
 
@@ -48,7 +49,8 @@ bot.on("message", (msg) => {
   const chatId = msg.chat.id;
 
   // Only process if admin is sending video to add
-  if (msg.video && pendingMovie && chatId === ADMIN_ID) {
+  if (msg.video && pendingMovie && msg.from.id === ADMIN_ID) {
+
     movies[pendingMovie] = {
       title: pendingMovie,
       file_id: msg.video.file_id
@@ -57,25 +59,25 @@ bot.on("message", (msg) => {
     // Save to movies.json
     fs.writeFileSync("movies.json", JSON.stringify(movies, null, 2));
 
-    bot.sendMessage(chatId, `✅ Movie "${pendingMovie}" saved!`);
+    // Confirm saved (don’t send video yet)
+    bot.sendMessage(chatId, `✅ Movie "${pendingMovie}" saved! Users can now search and click the download button.`);
+
     pendingMovie = null;
   }
 });
 
 // =======================
-// 6️⃣ SEARCH MOVIE SYSTEM
+// 6️⃣ SEARCH MOVIE SYSTEM (private + groups)
 // =======================
 bot.on("message", (msg) => {
   const chatId = msg.chat.id;
-
   if (!msg.text) return;
-
   const text = msg.text.toLowerCase().trim();
   if (text.startsWith("/")) return;
 
   if (movies[text]) {
     bot.sendMessage(chatId,
-      `🎬 ${movies[text].title}\n\nClick below to download.`,
+      `🎬 ${movies[text].title}\nClick below to download:`,
       {
         reply_markup: {
           inline_keyboard: [
@@ -105,5 +107,4 @@ bot.on("callback_query", (query) => {
   bot.answerCallbackQuery(query.id);
 });
 
-console.log("✅ Bot is running safely.");
-
+console.log("✅ Bot is running safely. Admin can add movies in private or groups.");
