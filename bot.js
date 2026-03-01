@@ -1,121 +1,109 @@
+// bot.js
+const TelegramBot = require("node-telegram-bot-api");
 const fs = require("fs");
 
-let movies = {};
-
-if (fs.existsSync("movies.json")) {
-  movies = JSON.parse(fs.readFileSync("movies.json"));
-}
-const TelegramBot = require("node-telegram-bot-api");
-const axios = require("axios");
-
-// Load environment variables from Railway
+// =======================
+// 1️⃣ BOT TOKEN
+// =======================
 const token = process.env.BOT_TOKEN;
-const TMDB_KEY = process.env.TMDB_KEY;
-
-if (!token || !TMDB_KEY) {
-  console.error("❌ Missing BOT_TOKEN or TMDB_KEY environment variable");
-  process.exit(1);
-}
-
 const bot = new TelegramBot(token, { polling: true });
 
-bot.onText(/\/start/, (msg) => {
-  bot.sendMessage(msg.chat.id, "🎬 Send any movie or TV series name. I will show multiple results!");
-});
+// =======================
+// 2️⃣ ADMIN SETTINGS
+// =======================
+const ADMIN_ID = 7977914980;
+let pendingMovie = null;
 
-bot.on("message", async (msg) => {
+// =======================
+// 3️⃣ LOAD MOVIES.JSON
+// =======================
+let movies = {};
+if (fs.existsSync("movies.json")) {
+  try {
+    movies = JSON.parse(fs.readFileSync("movies.json"));
+  } catch (err) {
+    console.log("Error loading movies.json:", err);
+    movies = {};
+  }
+}
+
+// =======================
+// 4️⃣ ADD MOVIE COMMAND
+// =======================
+bot.onText(/\/addmovie (.+)/, (msg, match) => {
   const chatId = msg.chat.id;
-  const query = msg.text;
 
-  if (!query || query.startsWith("/")) return;
+  if (chatId !== ADMIN_ID) {
+    return bot.sendMessage(chatId, "❌ Not authorized.");
+  }
 
-  try {
-    const search = await axios.get("https://api.themoviedb.org/3/search/multi", {
-      params: { api_key: TMDB_KEY, query: query }
-    });
+  pendingMovie = match[1].toLowerCase().trim();
+  bot.sendMessage(chatId, `🎬 Send the video file for "${pendingMovie}" now.`);
+});
 
-    const results = search.data.results;
-    if (!results || results.length === 0) {
-      return bot.sendMessage(chatId, "❌ No results found.");
-    }
+// =======================
+// 5️⃣ CAPTURE VIDEO FOR ADMIN
+// =======================
+bot.on("message", (msg) => {
+  const chatId = msg.chat.id;
 
-    // Top 5 results
-    const topResults = results.slice(0, 5);
-    const buttons = topResults.map((item, index) => {
-      const title = item.title || item.name || "Unknown";
-      return [{ text: `${index + 1}. ${title}`, callback_data: `select_${index}` }];
-    });
+  // Only process if admin is sending video to add
+  if (msg.video && pendingMovie && chatId === ADMIN_ID) {
+    movies[pendingMovie] = {
+      title: pendingMovie,
+      file_id: msg.video.file_id
+    };
 
-    await bot.sendMessage(chatId, "Select a movie/series:", {
-      reply_markup: { inline_keyboard: buttons }
-    });
+    // Save to movies.json
+    fs.writeFileSync("movies.json", JSON.stringify(movies, null, 2));
 
-    // Store results for this chat
-    bot.userResults = bot.userResults || {};
-    bot.userResults[chatId] = topResults;
-
-  } catch (error) {
-    console.log("TMDb SEARCH ERROR:", error.response?.data || error.message);
-    bot.sendMessage(chatId, "❌ Error searching TMDb. Try again later.");
+    bot.sendMessage(chatId, `✅ Movie "${pendingMovie}" saved!`);
+    pendingMovie = null;
   }
 });
 
-bot.on("callback_query", async (callbackQuery) => {
-  const chatId = callbackQuery.message.chat.id;
-  const data = callbackQuery.data;
+// =======================
+// 6️⃣ SEARCH MOVIE SYSTEM
+// =======================
+bot.on("message", (msg) => {
+  const chatId = msg.chat.id;
 
-  if (!data.startsWith("select_")) return;
+  if (!msg.text) return;
 
-  const index = parseInt(data.split("_")[1]);
-  const selected = bot.userResults?.[chatId]?.[index];
+  const text = msg.text.toLowerCase().trim();
+  if (text.startsWith("/")) return;
 
-  if (!selected) {
-    return bot.sendMessage(chatId, "❌ Selection expired or invalid.");
-  }
-
-  const title = selected.title || selected.name || "Unknown";
-  const release = selected.release_date || selected.first_air_date || "";
-  const year = release ? release.split("-")[0] : "N/A";
-  const rating = selected.vote_average || "N/A";
-  const description = selected.overview || "No description available";
-
-  const poster = selected.poster_path
-    ? `https://image.tmdb.org/t/p/w500${selected.poster_path}`
-    : null;
-
-  // Archive.org direct download
-  let downloadLink = "Not available";
-  try {
-    const archive = await axios.get(
-      `https://archive.org/advancedsearch.php?q=${encodeURIComponent(title)}&fl[]=identifier&sort[]=downloads desc&output=json`
+  if (movies[text]) {
+    bot.sendMessage(chatId,
+      `🎬 ${movies[text].title}\n\nClick below to download.`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: "⬇️ Download Movie", callback_data: text }
+            ]
+          ]
+        }
+      }
     );
-    if (archive.data.response.docs.length > 0) {
-      const id = archive.data.response.docs[0].identifier;
-      downloadLink = `https://archive.org/download/${id}/${id}.mp4`;
-    }
-  } catch {}
+  }
+});
 
-  // Web fallback
-  const webLink = `https://www.justwatch.com/us/search?q=${encodeURIComponent(title)}`;
+// =======================
+// 7️⃣ HANDLE DOWNLOAD BUTTON
+// =======================
+bot.on("callback_query", (query) => {
+  const chatId = query.message.chat.id;
+  const movieKey = query.data;
 
-  const message = `🎬 ${title}
-📅 Year: ${year}
-⭐ Rating: ${rating}/10
-
-📝 ${description}
-
-📥 Direct Download: ${downloadLink}
-🌐 Streaming / Watch Online: ${webLink}`;
-
-  if (poster) {
-    bot.sendPhoto(chatId, poster, { caption: message });
-  } else {
-    bot.sendMessage(chatId, message);
+  if (movies[movieKey]) {
+    bot.sendVideo(chatId, movies[movieKey].file_id, {
+      caption: `🎬 ${movies[movieKey].title}`
+    });
   }
 
-  // Clear stored results
-  if (bot.userResults?.[chatId]) delete bot.userResults[chatId];
-
-  // Answer callback query to remove loading spinner
-  bot.answerCallbackQuery(callbackQuery.id);
+  bot.answerCallbackQuery(query.id);
 });
+
+console.log("✅ Bot is running safely.");
+
