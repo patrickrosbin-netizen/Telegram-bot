@@ -1,18 +1,10 @@
-require("dotenv").config();
-const TelegramBot = require("node-telegram-bot-api");
-const { Pool } = require("pg");
+require('dotenv').config(); // Load .env variables
+const TelegramBot = require('node-telegram-bot-api');
+const { Pool } = require('pg');
 
 // ===== CHECK ENV VARIABLES =====
-if (!process.env.BOT_TOKEN) {
-  console.error("BOT_TOKEN missing!");
-  process.exit(1);
-}
-if (!process.env.DATABASE_URL) {
-  console.error("DATABASE_URL missing!");
-  process.exit(1);
-}
-if (!process.env.ADMIN_ID) {
-  console.error("ADMIN_ID missing!");
+if (!process.env.BOT_TOKEN || !process.env.ADMIN_ID || !process.env.DATABASE_URL) {
+  console.error("Missing BOT_TOKEN, ADMIN_ID, or DATABASE_URL in .env");
   process.exit(1);
 }
 
@@ -22,9 +14,9 @@ const ADMIN_ID = process.env.ADMIN_ID;
 // ===== POSTGRESQL POOL =====
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL.includes("localhost")
-    ? false
-    : { rejectUnauthorized: false },
+  ssl: process.env.DATABASE_URL.includes("localhost") 
+    ? false 
+    : { rejectUnauthorized: false }
 });
 
 // ===== CREATE TABLE IF NOT EXISTS =====
@@ -79,6 +71,7 @@ bot.onText(/\/addmovie (.+)/, async (msg, match) => {
 bot.on("channel_post", async (msg) => {
   if (!msg.video || !msg.caption) return;
 
+  // Optional: Use a hashtag as the movie name
   const match = msg.caption.match(/#(\w+)/);
   if (!match) return;
 
@@ -138,5 +131,4 @@ bot.onText(/\/stats/, async (msg) => {
   }
 });
 
-// ===== START MESSAGE =====
 console.log("Bot is running 🚀");
