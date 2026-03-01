@@ -37,6 +37,27 @@ bot.on("message", async (msg) => {
   const userId = msg.from.id;
   const text = msg.text ? msg.text.trim() : "";
 
+bot.on("channel_post", async (msg) => {
+  if (!msg.video || !msg.caption) return;
+
+  const caption = msg.caption.trim();
+
+  if (!caption.startsWith("#")) return;
+
+  const movieKey = caption.slice(1).toLowerCase();
+  const fileId = msg.video.file_id;
+
+  await pool.query(
+    `INSERT INTO movies (key, title, file_id)
+     VALUES ($1,$2,$3)
+     ON CONFLICT (key)
+     DO UPDATE SET file_id=$3`,
+    [movieKey, movieKey, fileId]
+  );
+
+  console.log("Saved from channel:", movieKey);
+});
+
   // ---------- Admin /addmovie command ----------
   if (text.startsWith("/addmovie") && userId === ADMIN_ID) {
     const args = text.split(" ").slice(1);
