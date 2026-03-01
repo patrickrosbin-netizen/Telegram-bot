@@ -6,13 +6,13 @@ const bot = new TelegramBot(token, { polling: true });
 
 const ADMIN_ID = 7977914980;
 
-// ================= DATABASE =================
+// ---------- PostgreSQL Setup ----------
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
+  ssl: { rejectUnauthorized: false }
 });
 
-// Create table if not exists
+// Create movies table if it doesn't exist
 (async () => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS movies (
@@ -26,10 +26,10 @@ const pool = new Pool({
       downloads INTEGER DEFAULT 0
     )
   `);
-  console.log("Database ready");
+  console.log("Database ready ✅");
 })();
 
-// ================= ADD MOVIE FLOW =================
+// ---------- Add Movie Flow ----------
 let pendingMovie = null;
 let pendingData = {};
 let step = 0;
@@ -39,8 +39,10 @@ bot.on("message", async (msg) => {
   const userId = msg.from.id;
   const text = msg.text ? msg.text.trim() : "";
 
-  // ===== ADMIN ADD FLOW =====
+  // --- Admin Add Movie ---
   if (userId === ADMIN_ID && pendingMovie) {
+
+    // Step 0: Waiting for video or skip
     if (step === 0) {
       if (msg.video) {
         pendingData.file_id = msg.video.file_id;
@@ -54,6 +56,7 @@ bot.on("message", async (msg) => {
       return;
     }
 
+    // Step 1: Waiting for poster or link
     if (step === 1) {
       if (pendingData.file_id) {
         pendingData.poster = text.toLowerCase() === "skip" ? null : text;
@@ -66,29 +69,11 @@ bot.on("message", async (msg) => {
       }
     }
 
+    // Step 2: Waiting for description
     if (step === 2) {
-      if (pendingData.file_id) {
-        pendingData.description =
-          text.toLowerCase() === "skip" ? null : text;
-      } else {
-        pendingData.poster =
-          text.toLowerCase() === "skip" ? null : text;
-        step = 3;
-        return bot.sendMessage(chatId, "📝 Send description or type 'skip'");
-      }
+      pendingData.description = text.toLowerCase() === "skip" ? null : text;
 
-      await saveMovie();
-      return;
-    }
-
-    if (step === 3) {
-      pendingData.description =
-        text.toLowerCase() === "skip" ? null : text;
-      await saveMovie();
-      return;
-    }
-
-    async function saveMovie() {
+      // Save movie to database
       await pool.query(
         `INSERT INTO movies (key, title, file_id, link, poster, description)
          VALUES ($1,$2,$3,$4,$5,$6)
@@ -100,21 +85,19 @@ bot.on("message", async (msg) => {
           pendingData.file_id || null,
           pendingData.link || null,
           pendingData.poster || null,
-          pendingData.description || null,
+          pendingData.description || null
         ]
       );
 
       bot.sendMessage(chatId, "✅ Movie saved permanently!");
-
       pendingMovie = null;
       pendingData = {};
       step = 0;
+      return;
     }
-
-    return;
   }
 
-  // ===== SEARCH =====
+  // --- Search Movie ---
   if (!text.startsWith("/")) {
     const result = await pool.query(
       "SELECT * FROM movies WHERE key = $1",
@@ -134,25 +117,24 @@ bot.on("message", async (msg) => {
         caption,
         reply_markup: {
           inline_keyboard: [
-            [{ text: "⬇️ Download Movie", callback_data: movie.key }],
-          ],
-        },
+            [{ text: "⬇️ Download Movie", callback_data: movie.key }]
+          ]
+        }
       });
     } else if (movie.link) {
       bot.sendPhoto(chatId, movie.poster || "", {
         caption,
         reply_markup: {
           inline_keyboard: [
-            [{ text: "⬇️ Download Movie", url: movie.link }],
-          ],
-        },
+            [{ text: "⬇️ Download Movie", url: movie.link }]
+          ]
+        }
       });
     }
-
     return;
   }
 
-  // ===== COMMANDS =====
+  // --- Admin Commands ---
   if (text.startsWith("/addmovie") && userId === ADMIN_ID) {
     const args = text.split(" ").slice(1);
     if (!args[0])
@@ -169,12 +151,9 @@ bot.on("message", async (msg) => {
   }
 
   if (text === "/stats" && userId === ADMIN_ID) {
-    const result = await pool.query(
-      "SELECT title, downloads FROM movies"
-    );
+    const result = await pool.query("SELECT title, downloads FROM movies");
 
     let message = "📊 Admin Stats\n\n";
-
     result.rows.forEach((row) => {
       message += `${row.title}: ${row.downloads} downloads\n`;
     });
@@ -183,7 +162,7 @@ bot.on("message", async (msg) => {
   }
 });
 
-// ===== CALLBACK FOR SMALL FILE =====
+// ---------- Callback for Small File ----------
 bot.on("callback_query", async (query) => {
   const chatId = query.message.chat.id;
 
@@ -193,7 +172,6 @@ bot.on("callback_query", async (query) => {
   );
 
   if (result.rows.length === 0) return;
-
   const movie = result.rows[0];
   if (!movie.file_id) return;
 
