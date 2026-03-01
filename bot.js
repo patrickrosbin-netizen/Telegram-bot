@@ -28,7 +28,20 @@ if (fs.existsSync("movies.json")) {
 }
 
 // =======================
-// 4️⃣ ADD MOVIE COMMAND
+// 4️⃣ ADMIN STATS
+// =======================
+let stats = {
+  totalMovies: Object.keys(movies).length,
+  downloads: {} // key: movie title, value: count
+};
+
+// Initialize download counters if not exist
+for (let key in movies) {
+  if (!stats.downloads[key]) stats.downloads[key] = 0;
+}
+
+// =======================
+// 5️⃣ ADD MOVIE COMMAND
 // =======================
 bot.onText(/\/addmovie (.+)/, (msg, match) => {
   const chatId = msg.chat.id;
@@ -43,7 +56,7 @@ bot.onText(/\/addmovie (.+)/, (msg, match) => {
 });
 
 // =======================
-// 5️⃣ CAPTURE VIDEO FOR ADMIN
+// 6️⃣ CAPTURE VIDEO FOR ADMIN
 // =======================
 bot.on("message", (msg) => {
   const chatId = msg.chat.id;
@@ -51,23 +64,52 @@ bot.on("message", (msg) => {
   // Only process if admin is sending video to add
   if (msg.video && pendingMovie && msg.from.id === ADMIN_ID) {
 
-    movies[pendingMovie] = {
-      title: pendingMovie,
-      file_id: msg.video.file_id
+    // Ask admin for poster URL and description
+    bot.sendMessage(chatId, `📸 Send poster URL for "${pendingMovie}" (or type "skip" to leave empty):`);
+    
+    const posterCollector = (posterMsg) => {
+      let poster = posterMsg.text.trim();
+      if (poster.toLowerCase() === "skip") poster = "";
+      bot.sendMessage(chatId, `📝 Send short description for "${pendingMovie}" (or type "skip"):`);
+
+      const descCollector = (descMsg) => {
+        let description = descMsg.text.trim();
+        if (description.toLowerCase() === "skip") description = "";
+
+        // Save movie
+        movies[pendingMovie] = {
+          title: pendingMovie,
+          file_id: msg.video.file_id,
+          poster: poster,
+          description: description
+        };
+
+        fs.writeFileSync("movies.json", JSON.stringify(movies, null, 2));
+
+        // Update stats
+        stats.totalMovies = Object.keys(movies).length;
+        stats.downloads[pendingMovie] = 0;
+
+        bot.sendMessage(chatId, `✅ Movie "${pendingMovie}" saved! Users can now search and click the download button.`);
+
+        pendingMovie = null;
+
+        // Remove listeners
+        bot.removeListener("message", descCollector);
+      };
+
+      bot.on("message", descCollector);
+
+      // Remove poster listener
+      bot.removeListener("message", posterCollector);
     };
 
-    // Save to movies.json
-    fs.writeFileSync("movies.json", JSON.stringify(movies, null, 2));
-
-    // Confirm saved (don’t send video yet)
-    bot.sendMessage(chatId, `✅ Movie "${pendingMovie}" saved! Users can now search and click the download button.`);
-
-    pendingMovie = null;
+    bot.on("message", posterCollector);
   }
 });
 
 // =======================
-// 6️⃣ SEARCH MOVIE SYSTEM (private + groups)
+// 7️⃣ SEARCH MOVIE SYSTEM (private + groups) with preview
 // =======================
 bot.on("message", (msg) => {
   const chatId = msg.chat.id;
@@ -75,24 +117,33 @@ bot.on("message", (msg) => {
   const text = msg.text.toLowerCase().trim();
   if (text.startsWith("/")) return;
 
-  if (movies[text]) {
-    bot.sendMessage(chatId,
-      `🎬 ${movies[text].title}\nClick below to download:`,
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: "⬇️ Download Movie", callback_data: text }
-            ]
-          ]
-        }
+  const movie = movies[text];
+  if (!movie) return;
+
+  // Send poster + caption
+  const caption = `🎬 ${movie.title}` + (movie.description ? `\n\n📝 ${movie.description}` : "");
+  if (movie.poster) {
+    bot.sendPhoto(chatId, movie.poster, {
+      caption: caption,
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "⬇️ Download Movie", callback_data: text }]
+        ]
       }
-    );
+    });
+  } else {
+    bot.sendMessage(chatId, caption, {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "⬇️ Download Movie", callback_data: text }]
+        ]
+      }
+    });
   }
 });
 
 // =======================
-// 7️⃣ HANDLE DOWNLOAD BUTTON
+// 8️⃣ HANDLE DOWNLOAD BUTTON
 // =======================
 bot.on("callback_query", (query) => {
   const chatId = query.message.chat.id;
@@ -102,9 +153,29 @@ bot.on("callback_query", (query) => {
     bot.sendVideo(chatId, movies[movieKey].file_id, {
       caption: `🎬 ${movies[movieKey].title}`
     });
+
+    // Update download stats
+    if (!stats.downloads[movieKey]) stats.downloads[movieKey] = 0;
+    stats.downloads[movieKey]++;
   }
 
   bot.answerCallbackQuery(query.id);
 });
 
-console.log("✅ Bot is running safely. Admin can add movies in private or groups.");
+// =======================
+// 9️⃣ ADMIN STATS COMMAND
+// =======================
+bot.onText(/\/stats/, (msg) => {
+  const chatId = msg.chat.id;
+  if (msg.from.id !== ADMIN_ID) return;
+
+  let message = `📊 Admin Stats\n\n`;
+  message += `Total Movies: ${stats.totalMovies}\n\n`;
+  for (let key in stats.downloads) {
+    message += `${movies[key].title}: ${stats.downloads[key]} downloads\n`;
+  }
+
+  bot.sendMessage(chatId, message);
+});
+
+console.log("✅ Bot running with movie previews & admin stats. Admin can add movies in private or groups.");
