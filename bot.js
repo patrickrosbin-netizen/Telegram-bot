@@ -1,112 +1,209 @@
 const TelegramBot = require("node-telegram-bot-api");
-const fs = require("fs");
+const { Pool } = require("pg");
 
 const token = process.env.BOT_TOKEN;
 const bot = new TelegramBot(token, { polling: true });
 
 const ADMIN_ID = 7977914980;
 
-let movies = {};
-if (fs.existsSync("movies.json")) {
-  movies = JSON.parse(fs.readFileSync("movies.json"));
-}
+// ================= DATABASE =================
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
 
+// Create table if not exists
+(async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS movies (
+      id SERIAL PRIMARY KEY,
+      key TEXT UNIQUE,
+      title TEXT,
+      file_id TEXT,
+      link TEXT,
+      poster TEXT,
+      description TEXT,
+      downloads INTEGER DEFAULT 0
+    )
+  `);
+  console.log("Database ready");
+})();
+
+// ================= ADD MOVIE FLOW =================
 let pendingMovie = null;
-let pendingMovieData = {};
+let pendingData = {};
+let step = 0;
 
-// =======================
-// ADD MOVIE COMMAND
-// =======================
-bot.onText(/\/addmovie (.+)/, (msg, match) => {
-  if (msg.from.id !== ADMIN_ID) return;
+bot.on("message", async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const text = msg.text ? msg.text.trim() : "";
 
-  pendingMovie = match[1].toLowerCase();
-  pendingMovieData = {};
-
-  bot.sendMessage(msg.chat.id, "Send video file or type 'skip' for large file.");
-});
-
-// =======================
-// HANDLE VIDEO OR LINK
-// =======================
-bot.on("message", (msg) => {
-  if (!pendingMovie || msg.from.id !== ADMIN_ID) return;
-
-  if (msg.video) {
-    pendingMovieData.file_id = msg.video.file_id;
-    bot.sendMessage(msg.chat.id, "Send poster URL or type 'skip'.");
-  } else if (msg.text && msg.text.toLowerCase() === "skip") {
-    bot.sendMessage(msg.chat.id, "Send download link.");
-  } else if (msg.text && msg.text.startsWith("http")) {
-    if (!pendingMovieData.file_id) {
-      pendingMovieData.link = msg.text;
-      bot.sendMessage(msg.chat.id, "Send poster URL or type 'skip'.");
-    } else {
-      pendingMovieData.poster = msg.text;
-      bot.sendMessage(msg.chat.id, "Send description or type 'skip'.");
+  // ===== ADMIN ADD FLOW =====
+  if (userId === ADMIN_ID && pendingMovie) {
+    if (step === 0) {
+      if (msg.video) {
+        pendingData.file_id = msg.video.file_id;
+        step = 1;
+        return bot.sendMessage(chatId, "📸 Send poster URL or type 'skip'");
+      }
+      if (text.toLowerCase() === "skip") {
+        step = 1;
+        return bot.sendMessage(chatId, "🌐 Send download link");
+      }
+      return;
     }
-  } else if (msg.text) {
-    pendingMovieData.description =
-      msg.text.toLowerCase() === "skip" ? "" : msg.text;
 
-    movies[pendingMovie] = {
-      title: pendingMovie,
-      ...pendingMovieData,
-    };
+    if (step === 1) {
+      if (pendingData.file_id) {
+        pendingData.poster = text.toLowerCase() === "skip" ? null : text;
+        step = 2;
+        return bot.sendMessage(chatId, "📝 Send description or type 'skip'");
+      } else {
+        pendingData.link = text;
+        step = 2;
+        return bot.sendMessage(chatId, "📸 Send poster URL or type 'skip'");
+      }
+    }
 
-    fs.writeFileSync("movies.json", JSON.stringify(movies, null, 2));
+    if (step === 2) {
+      if (pendingData.file_id) {
+        pendingData.description =
+          text.toLowerCase() === "skip" ? null : text;
+      } else {
+        pendingData.poster =
+          text.toLowerCase() === "skip" ? null : text;
+        step = 3;
+        return bot.sendMessage(chatId, "📝 Send description or type 'skip'");
+      }
 
-    bot.sendMessage(msg.chat.id, "Movie saved successfully!");
+      await saveMovie();
+      return;
+    }
 
-    pendingMovie = null;
-    pendingMovieData = {};
+    if (step === 3) {
+      pendingData.description =
+        text.toLowerCase() === "skip" ? null : text;
+      await saveMovie();
+      return;
+    }
+
+    async function saveMovie() {
+      await pool.query(
+        `INSERT INTO movies (key, title, file_id, link, poster, description)
+         VALUES ($1,$2,$3,$4,$5,$6)
+         ON CONFLICT (key) DO UPDATE
+         SET file_id=$3, link=$4, poster=$5, description=$6`,
+        [
+          pendingMovie,
+          pendingMovie,
+          pendingData.file_id || null,
+          pendingData.link || null,
+          pendingData.poster || null,
+          pendingData.description || null,
+        ]
+      );
+
+      bot.sendMessage(chatId, "✅ Movie saved permanently!");
+
+      pendingMovie = null;
+      pendingData = {};
+      step = 0;
+    }
+
+    return;
+  }
+
+  // ===== SEARCH =====
+  if (!text.startsWith("/")) {
+    const result = await pool.query(
+      "SELECT * FROM movies WHERE key = $1",
+      [text.toLowerCase()]
+    );
+
+    if (result.rows.length === 0) return;
+
+    const movie = result.rows[0];
+
+    const caption =
+      `🎬 ${movie.title}` +
+      (movie.description ? `\n\n📝 ${movie.description}` : "");
+
+    if (movie.file_id) {
+      bot.sendPhoto(chatId, movie.poster || "", {
+        caption,
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "⬇️ Download Movie", callback_data: movie.key }],
+          ],
+        },
+      });
+    } else if (movie.link) {
+      bot.sendPhoto(chatId, movie.poster || "", {
+        caption,
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "⬇️ Download Movie", url: movie.link }],
+          ],
+        },
+      });
+    }
+
+    return;
+  }
+
+  // ===== COMMANDS =====
+  if (text.startsWith("/addmovie") && userId === ADMIN_ID) {
+    const args = text.split(" ").slice(1);
+    if (!args[0])
+      return bot.sendMessage(chatId, "Usage: /addmovie moviename");
+
+    pendingMovie = args.join(" ").toLowerCase();
+    pendingData = {};
+    step = 0;
+
+    return bot.sendMessage(
+      chatId,
+      `🎬 Adding "${pendingMovie}". Send video or type 'skip'`
+    );
+  }
+
+  if (text === "/stats" && userId === ADMIN_ID) {
+    const result = await pool.query(
+      "SELECT title, downloads FROM movies"
+    );
+
+    let message = "📊 Admin Stats\n\n";
+
+    result.rows.forEach((row) => {
+      message += `${row.title}: ${row.downloads} downloads\n`;
+    });
+
+    return bot.sendMessage(chatId, message);
   }
 });
 
-// =======================
-// SEARCH MOVIE
-// =======================
-bot.on("message", (msg) => {
-  if (!msg.text || msg.text.startsWith("/")) return;
+// ===== CALLBACK FOR SMALL FILE =====
+bot.on("callback_query", async (query) => {
+  const chatId = query.message.chat.id;
 
-  const key = msg.text.toLowerCase();
-  const movie = movies[key];
-  if (!movie) return;
+  const result = await pool.query(
+    "SELECT * FROM movies WHERE key = $1",
+    [query.data]
+  );
 
-  const caption =
-    `🎬 ${movie.title}` +
-    (movie.description ? `\n\n📝 ${movie.description}` : "");
+  if (result.rows.length === 0) return;
 
-  if (movie.file_id) {
-    bot.sendPhoto(msg.chat.id, movie.poster || "", {
-      caption,
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "⬇️ Download Movie", callback_data: key }],
-        ],
-      },
-    });
-  } else if (movie.link) {
-    bot.sendPhoto(msg.chat.id, movie.poster || "", {
-      caption,
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "⬇️ Download Movie", url: movie.link }],
-        ],
-      },
-    });
-  }
-});
+  const movie = result.rows[0];
+  if (!movie.file_id) return;
 
-// =======================
-// CALLBACK FOR SMALL FILES
-// =======================
-bot.on("callback_query", (query) => {
-  const movie = movies[query.data];
-  if (!movie || !movie.file_id) return;
+  await pool.query(
+    "UPDATE movies SET downloads = downloads + 1 WHERE key = $1",
+    [query.data]
+  );
 
-  bot.sendVideo(query.message.chat.id, movie.file_id);
+  bot.sendVideo(chatId, movie.file_id);
   bot.answerCallbackQuery(query.id);
 });
 
-console.log("Bot running (former multi-listener version)");
+console.log("🚀 PostgreSQL Movie Bot Running");
