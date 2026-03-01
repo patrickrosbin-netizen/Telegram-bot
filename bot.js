@@ -12,10 +12,11 @@ const bot = new TelegramBot(token, { polling: true });
 // 2️⃣ ADMIN SETTINGS
 // =======================
 const ADMIN_ID = 7977914980;
-let pendingMovie = null;
+let pendingMovie = null; // Track if admin is adding a movie
+let addFlowStep = 0; // Track which step in add-movie flow
 
 // =======================
-// 3️⃣ LOAD MOVIES.JSON SAFELY
+// 3️⃣ LOAD MOVIES.JSON
 // =======================
 let movies = {};
 if (fs.existsSync("movies.json")) {
@@ -34,224 +35,162 @@ let stats = {
   totalMovies: Object.keys(movies).length,
   downloads: {} // key: movie title, value: count
 };
-
-// Initialize download counters if not exist
-for (let key in movies) {
-  if (!stats.downloads[key]) stats.downloads[key] = 0;
-}
+for (let key in movies) if (!stats.downloads[key]) stats.downloads[key] = 0;
 
 // =======================
-// 5️⃣ ADD MOVIE COMMAND
+// 5️⃣ SINGLE MESSAGE LISTENER
 // =======================
-bot.onText(/\/addmovie (.+)/, (msg, match) => {
+bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const text = msg.text ? msg.text.trim() : "";
 
-  if (msg.from.id !== ADMIN_ID) {
-    return bot.sendMessage(chatId, "❌ Not authorized.");
-  }
+  // -----------------------
+  // Admin add-movie flow
+  // -----------------------
+  if (userId === ADMIN_ID && pendingMovie) {
+    if (addFlowStep === 0) {
+      // Step 0: receive video or skip
+      if (msg.video) {
+        pendingMovieData = { file_id: msg.video.file_id };
+        addFlowStep = 1;
+        bot.sendMessage(chatId, "📸 Send poster URL (or type 'skip')");
+      } else if (text.toLowerCase() === "skip") {
+        pendingMovieData = {};
+        addFlowStep = 1;
+        bot.sendMessage(chatId, "🌐 Send download link for the large file:");
+      } else {
+        bot.sendMessage(chatId, "❌ Send a video file or type 'skip' for large file.");
+      }
+      return;
+    }
 
-  pendingMovie = match[1].toLowerCase().trim();
-  bot.sendMessage(chatId, `🎬 Send the video file for "${pendingMovie}" now (or type "skip" if it's a large file and you will provide a download link).`);
-});
+    if (addFlowStep === 1) {
+      // Step 1: poster URL or download link
+      if (pendingMovieData.file_id) {
+        // small file: poster
+        pendingMovieData.poster = text.toLowerCase() === "skip" ? "" : text;
+        addFlowStep = 2;
+        bot.sendMessage(chatId, "📝 Send short description (or type 'skip')");
+      } else {
+        // large file: link
+        if (!text.startsWith("http")) return bot.sendMessage(chatId, "❌ Invalid link. Try again.");
+        pendingMovieData.link = text;
+        addFlowStep = 2;
+        bot.sendMessage(chatId, "📸 Send poster URL (or type 'skip')");
+      }
+      return;
+    }
 
-// =======================
-// 6️⃣ CAPTURE VIDEO OR LINK FOR ADMIN
-// =======================
-bot.on("message", (msg) => {
-  const chatId = msg.chat.id;
-
-  if (!pendingMovie || msg.from.id !== ADMIN_ID) return;
-
-  // If admin sends "skip" → large file mode
-  if (msg.text && msg.text.toLowerCase() === "skip") {
-    bot.sendMessage(chatId, `🌐 Send the download link for "${pendingMovie}" now:`);
-    const linkCollector = (linkMsg) => {
-      const link = linkMsg.text.trim();
-      if (!link.startsWith("http")) {
-        bot.sendMessage(chatId, "❌ Invalid link. Try again.");
+    if (addFlowStep === 2) {
+      // Step 2: description or poster (depending on previous step)
+      if (pendingMovieData.file_id) {
+        pendingMovieData.description = text.toLowerCase() === "skip" ? "" : text;
+      } else {
+        pendingMovieData.poster = text.toLowerCase() === "skip" ? "" : text;
+        addFlowStep = 3;
+        bot.sendMessage(chatId, "📝 Send short description (or type 'skip')");
         return;
       }
 
-      // Ask for poster
-      bot.sendMessage(chatId, `📸 Send poster URL (or type "skip"):`);
+      // Save movie
+      movies[pendingMovie] = { title: pendingMovie, ...pendingMovieData };
+      fs.writeFileSync("movies.json", JSON.stringify(movies, null, 2));
 
-      const posterCollector = (posterMsg) => {
-        let poster = posterMsg.text.trim();
-        if (poster.toLowerCase() === "skip") poster = "";
+      // Update stats
+      stats.totalMovies = Object.keys(movies).length;
+      stats.downloads[pendingMovie] = 0;
 
-        // Ask for description
-        bot.sendMessage(chatId, `📝 Send short description (or type "skip"):`);
+      bot.sendMessage(chatId, `✅ Movie "${pendingMovie}" saved successfully!`);
 
-        const descCollector = (descMsg) => {
-          let description = descMsg.text.trim();
-          if (description.toLowerCase() === "skip") description = "";
+      // Reset flow
+      pendingMovie = null;
+      addFlowStep = 0;
+      return;
+    }
 
-          // Save movie
-          movies[pendingMovie] = {
-            title: pendingMovie,
-            link: link,
-            poster: poster,
-            description: description
-          };
+    if (addFlowStep === 3) {
+      // Step 3: description for large file
+      pendingMovieData.description = text.toLowerCase() === "skip" ? "" : text;
 
-          fs.writeFileSync("movies.json", JSON.stringify(movies, null, 2));
+      // Save movie
+      movies[pendingMovie] = { title: pendingMovie, ...pendingMovieData };
+      fs.writeFileSync("movies.json", JSON.stringify(movies, null, 2));
 
-          stats.totalMovies = Object.keys(movies).length;
-          stats.downloads[pendingMovie] = 0;
+      stats.totalMovies = Object.keys(movies).length;
+      stats.downloads[pendingMovie] = 0;
 
-          bot.sendMessage(chatId, `✅ Movie "${pendingMovie}" saved! Users can now search and click the download button.`);
+      bot.sendMessage(chatId, `✅ Large movie "${pendingMovie}" saved successfully!`);
 
-          pendingMovie = null;
+      // Reset flow
+      pendingMovie = null;
+      addFlowStep = 0;
+      return;
+    }
+  }
 
-          bot.removeListener("message", descCollector);
-        };
+  // -----------------------
+  // Search movies
+  // -----------------------
+  if (!text.startsWith("/")) {
+    const movie = movies[text.toLowerCase()];
+    if (!movie) return;
 
-        bot.on("message", descCollector);
-        bot.removeListener("message", posterCollector);
-      };
+    const caption = `🎬 ${movie.title}` + (movie.description ? `\n\n📝 ${movie.description}` : "");
 
-      bot.on("message", posterCollector);
-      bot.removeListener("message", linkCollector);
-    };
-
-    bot.on("message", linkCollector);
+    if (movie.file_id) {
+      bot.sendPhoto(chatId, movie.poster || "", {
+        caption,
+        reply_markup: {
+          inline_keyboard: [[{ text: "⬇️ Download Movie", callback_data: text.toLowerCase() }]]
+        }
+      });
+    } else if (movie.link) {
+      bot.sendPhoto(chatId, movie.poster || "", {
+        caption,
+        reply_markup: {
+          inline_keyboard: [[{ text: "⬇️ Download Movie", url: movie.link }]]
+        }
+      });
+    }
     return;
   }
 
-  // If a video file is sent (small file)
-  if (msg.video) {
-    // Ask for poster
-    bot.sendMessage(chatId, `📸 Send poster URL (or type "skip"):`);
+  // -----------------------
+  // Admin commands
+  // -----------------------
+  if (text.startsWith("/addmovie") && userId === ADMIN_ID) {
+    const args = text.split(" ").slice(1);
+    if (!args[0]) return bot.sendMessage(chatId, "❌ Usage: /addmovie MovieTitle");
+    pendingMovie = args.join(" ").toLowerCase();
+    addFlowStep = 0;
+    bot.sendMessage(chatId, `🎬 Starting add flow for "${pendingMovie}". Send video or type 'skip' for large file.`);
+  }
 
-    const posterCollector = (posterMsg) => {
-      let poster = posterMsg.text.trim();
-      if (poster.toLowerCase() === "skip") poster = "";
-
-      // Ask for description
-      bot.sendMessage(chatId, `📝 Send short description (or type "skip"):`);
-
-      const descCollector = (descMsg) => {
-        let description = descMsg.text.trim();
-        if (description.toLowerCase() === "skip") description = "";
-
-        // Save movie
-        movies[pendingMovie] = {
-          title: pendingMovie,
-          file_id: msg.video.file_id,
-          poster: poster,
-          description: description
-        };
-
-        fs.writeFileSync("movies.json", JSON.stringify(movies, null, 2));
-
-        stats.totalMovies = Object.keys(movies).length;
-        stats.downloads[pendingMovie] = 0;
-
-        bot.sendMessage(chatId, `✅ Movie "${pendingMovie}" saved! Users can now search and click the download button.`);
-
-        pendingMovie = null;
-
-        bot.removeListener("message", descCollector);
-      };
-
-      bot.on("message", descCollector);
-      bot.removeListener("message", posterCollector);
-    };
-
-    bot.on("message", posterCollector);
+  if (text === "/stats" && userId === ADMIN_ID) {
+    let message = `📊 Admin Stats\n\nTotal Movies: ${stats.totalMovies}\n\n`;
+    for (let key in stats.downloads) {
+      message += `${movies[key].title}: ${stats.downloads[key]} downloads\n`;
+    }
+    bot.sendMessage(chatId, message);
   }
 });
 
 // =======================
-// 7️⃣ SEARCH MOVIE SYSTEM
-// =======================
-bot.on("message", (msg) => {
-  const chatId = msg.chat.id;
-  if (!msg.text) return;
-  const text = msg.text.toLowerCase().trim();
-  if (text.startsWith("/")) return;
-
-  const movie = movies[text];
-  if (!movie) return;
-
-  const caption = `🎬 ${movie.title}` + (movie.description ? `\n\n📝 ${movie.description}` : "");
-
-  if (movie.poster) {
-    if (movie.file_id) {
-      // Small file → send poster + download button (inline, triggers sendVideo)
-      bot.sendPhoto(chatId, movie.poster, {
-        caption: caption,
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: "⬇️ Download Movie", callback_data: text }]
-          ]
-        }
-      });
-    } else if (movie.link) {
-      // Large file → send poster + download button with URL
-      bot.sendPhoto(chatId, movie.poster, {
-        caption: caption,
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: "⬇️ Download Movie", url: movie.link }]
-          ]
-        }
-      });
-    }
-  } else {
-    if (movie.file_id) {
-      bot.sendMessage(chatId, caption, {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: "⬇️ Download Movie", callback_data: text }]
-          ]
-        }
-      });
-    } else if (movie.link) {
-      bot.sendMessage(chatId, caption, {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: "⬇️ Download Movie", url: movie.link }]
-          ]
-        }
-      });
-    }
-  }
-});
-
-// =======================
-// 8️⃣ HANDLE DOWNLOAD BUTTON FOR SMALL FILES
+// 6️⃣ Handle callback for small files
 // =======================
 bot.on("callback_query", (query) => {
   const chatId = query.message.chat.id;
-  const movieKey = query.data;
-
+  const movieKey = query.data.toLowerCase();
   const movie = movies[movieKey];
-  if (!movie) return;
+  if (!movie || !movie.file_id) return;
 
-  if (movie.file_id) {
-    bot.sendVideo(chatId, movie.file_id, { caption: `🎬 ${movie.title}` });
-    if (!stats.downloads[movieKey]) stats.downloads[movieKey] = 0;
-    stats.downloads[movieKey]++;
-  }
+  bot.sendVideo(chatId, movie.file_id, { caption: `🎬 ${movie.title}` });
+
+  if (!stats.downloads[movieKey]) stats.downloads[movieKey] = 0;
+  stats.downloads[movieKey]++;
 
   bot.answerCallbackQuery(query.id);
 });
 
-// =======================
-// 9️⃣ ADMIN STATS
-// =======================
-bot.onText(/\/stats/, (msg) => {
-  const chatId = msg.chat.id;
-  if (msg.from.id !== ADMIN_ID) return;
-
-  let message = `📊 Admin Stats\n\n`;
-  message += `Total Movies: ${stats.totalMovies}\n\n`;
-  for (let key in stats.downloads) {
-    message += `${movies[key].title}: ${stats.downloads[key]} downloads\n`;
-  }
-
-  bot.sendMessage(chatId, message);
-});
-
-console.log("✅ Bot running! Handles small and large files with previews & admin stats.");
+console.log("✅ Bot running! Clean single-listener version with all features intact.");
