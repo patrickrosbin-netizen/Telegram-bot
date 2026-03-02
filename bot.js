@@ -15,19 +15,18 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
-// ===== TEMPORARY DATABASE RESET =====
+// ===== DATABASE INIT =====
 (async () => {
   try {
-    await pool.query(`DROP TABLE IF EXISTS movies`); // <- REMOVE AFTER FIRST DEPLOY
     await pool.query(`
-      CREATE TABLE movies (
+      CREATE TABLE IF NOT EXISTS movies (
         id SERIAL PRIMARY KEY,
         name TEXT UNIQUE NOT NULL,
         file_id TEXT NOT NULL,
         caption TEXT
       )
     `);
-    console.log("🔥 Movies table reset.");
+    console.log("✅ Database Ready");
   } catch (err) {
     console.error("DB INIT ERROR:", err.message);
     process.exit(1);
@@ -133,4 +132,4 @@ bot.onText(/\/stats/, async (msg) => {
   }
 });
 
-console.log("🚀 Advanced Bot Running (WITH TEMP RESET)...");
+console.log("🚀 Advanced Bot Running (NORMAL)...");
