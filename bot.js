@@ -63,48 +63,80 @@ bot.onText(/\/addmovie (.+)/, (msg, match) => {
   });
 });
 
-// ===== SEARCH MOVIE (CRASH PROOF) =====
+// ===== SEARCH MOVIE (WITH PAGINATION) =====
+const PAGE_SIZE = 10; // 10 movies per page
+
 bot.on("message", async (msg) => {
   if (!msg.text || msg.text.startsWith("/")) return;
 
+  const search = msg.text.trim().toLowerCase();
+  await sendSearchResults(msg.chat.id, search, 0);
+});
+
+// ===== SEND SEARCH RESULTS FUNCTION =====
+async function sendSearchResults(chatId, search, page) {
   try {
-    const search = msg.text.trim().toLowerCase();
     const result = await pool.query(
-      "SELECT id, name FROM movies WHERE LOWER(name) LIKE $1",
+      "SELECT id, name FROM movies WHERE LOWER(name) LIKE $1 ORDER BY name ASC",
       [`%${search}%`]
     );
 
-    if (!result.rows.length) return bot.sendMessage(msg.chat.id, "❌ Movie not found.");
+    if (!result.rows.length) return bot.sendMessage(chatId, "❌ Movie not found.");
 
-    const movie = result.rows[0];
-    await bot.sendMessage(msg.chat.id, `🎬 ${movie.name}`, {
-      reply_markup: {
-        inline_keyboard: [[{ text: "⬇ Download", callback_data: `download_${movie.id}` }]]
-      }
+    const start = page * PAGE_SIZE;
+    const moviesPage = result.rows.slice(start, start + PAGE_SIZE);
+
+    const inlineButtons = moviesPage.map(movie => [
+      { text: movie.name, callback_data: `download_${movie.id}` }
+    ]);
+
+    // Add pagination buttons
+    const paginationButtons = [];
+    if (start > 0)
+      paginationButtons.push({ text: "⬅ Prev", callback_data: `page_${search}_${page - 1}` });
+    if (start + PAGE_SIZE < result.rows.length)
+      paginationButtons.push({ text: "Next ➡", callback_data: `page_${search}_${page + 1}` });
+
+    if (paginationButtons.length) inlineButtons.push(paginationButtons);
+
+    await bot.sendMessage(chatId, `🎬 Found ${result.rows.length} movie(s):`, {
+      reply_markup: { inline_keyboard: inlineButtons }
     });
   } catch (err) {
     console.error("SEARCH ERROR:", err.message);
-    bot.sendMessage(msg.chat.id, "❌ Search system error.");
+    bot.sendMessage(chatId, "❌ Search system error.");
   }
-});
+}
 
-// ===== DOWNLOAD BUTTON HANDLER =====
+// ===== CALLBACK HANDLER =====
 bot.on("callback_query", async (query) => {
-  if (!query.data.startsWith("download_")) return;
-  const movieId = query.data.split("_")[1];
+  const data = query.data;
 
-  try {
-    const result = await pool.query("SELECT file_id, caption FROM movies WHERE id=$1", [movieId]);
-    if (!result.rows.length) return bot.answerCallbackQuery(query.id, { text: "Movie not found." });
+  // Download movie
+  if (data.startsWith("download_")) {
+    const movieId = data.split("_")[1];
+    try {
+      const result = await pool.query("SELECT file_id, caption FROM movies WHERE id=$1", [movieId]);
+      if (!result.rows.length) return bot.answerCallbackQuery(query.id, { text: "Movie not found." });
 
-    const movie = result.rows[0];
-    if (movie.file_id.startsWith("http")) await bot.sendMessage(query.message.chat.id, movie.file_id);
-    else await bot.sendVideo(query.message.chat.id, movie.file_id, { caption: movie.caption || "🎬 Enjoy!" });
+      const movie = result.rows[0];
+      if (movie.file_id.startsWith("http"))
+        await bot.sendMessage(query.message.chat.id, movie.file_id);
+      else
+        await bot.sendVideo(query.message.chat.id, movie.file_id, { caption: movie.caption || "🎬 Enjoy!" });
 
-    bot.answerCallbackQuery(query.id);
-  } catch (err) {
-    console.error("DOWNLOAD ERROR:", err.message);
-    bot.answerCallbackQuery(query.id, { text: "Error sending movie." });
+      bot.answerCallbackQuery(query.id);
+    } catch (err) {
+      console.error("DOWNLOAD ERROR:", err.message);
+      bot.answerCallbackQuery(query.id, { text: "Error sending movie." });
+    }
+  }
+
+  // Pagination buttons
+  else if (data.startsWith("page_")) {
+    const [, search, page] = data.split("_");
+    await bot.deleteMessage(query.message.chat.id, query.message.message_id);
+    await sendSearchResults(query.message.chat.id, search, parseInt(page));
   }
 });
 
@@ -132,4 +164,4 @@ bot.onText(/\/stats/, async (msg) => {
   }
 });
 
-console.log("🚀 Advanced Bot Running (NORMAL)...");
+console.log("🚀 Advanced Bot Running (MULTI-RESULT + PAGINATION)...");
