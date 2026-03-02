@@ -18,20 +18,16 @@ const pool = new Pool({
 // ===== DATABASE INIT =====
 (async () => {
   try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS movies (
-        id SERIAL PRIMARY KEY,
-        name TEXT UNIQUE NOT NULL,
-        file_id TEXT NOT NULL,
-        caption TEXT
-      )
-    `);
-    console.log("✅ Database Ready");
-  } catch (err) {
-    console.error("DB INIT ERROR:", err.message);
-    process.exit(1);
-  }
-})();
+    await pool.query(`DROP TABLE IF EXISTS movies`);
+await pool.query(`
+  CREATE TABLE movies (
+    id SERIAL PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    file_id TEXT NOT NULL,
+    caption TEXT
+  )
+`);
+console.log("🔥 Movies table reset.");
 
 // ===== ADMIN ADD MOVIE =====
 bot.onText(/\/addmovie (.+)/, (msg, match) => {
