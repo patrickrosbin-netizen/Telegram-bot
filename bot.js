@@ -17,15 +17,20 @@ const pool = new Pool({
 
 // ===== DATABASE INIT =====
 (async () => {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS movies (
-      id SERIAL PRIMARY KEY,
-      name TEXT UNIQUE NOT NULL,
-      file_id TEXT NOT NULL,
-      caption TEXT
-    )
-  `);
-  console.log("✅ Database Ready");
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS movies (
+        id SERIAL PRIMARY KEY,
+        name TEXT UNIQUE NOT NULL,
+        file_id TEXT NOT NULL,
+        caption TEXT
+      )
+    `);
+    console.log("✅ Database Ready");
+  } catch (err) {
+    console.error("DB INIT ERROR:", err.message);
+    process.exit(1);
+  }
 })();
 
 // ===== ADMIN ADD MOVIE =====
@@ -44,9 +49,11 @@ bot.onText(/\/addmovie (.+)/, (msg, match) => {
 
       if (response.video) {
         file_id = response.video.file_id;
-      } else if (response.text && response.text.startsWith("http")) {
+      } 
+      else if (response.text && response.text.startsWith("http")) {
         file_id = response.text;
-      } else {
+      } 
+      else {
         return bot.sendMessage(msg.chat.id, "❌ Invalid input.");
       }
 
@@ -58,42 +65,44 @@ bot.onText(/\/addmovie (.+)/, (msg, match) => {
       bot.sendMessage(msg.chat.id, "✅ Movie Saved Successfully.");
 
     } catch (err) {
+      console.error("ADD ERROR:", err.message);
       bot.sendMessage(msg.chat.id, "❌ Movie already exists or DB error.");
     }
   });
 });
 
-// ===== SEARCH MOVIE =====
+// ===== SEARCH MOVIE (CRASH PROOF) =====
 bot.on("message", async (msg) => {
   if (!msg.text || msg.text.startsWith("/")) return;
 
   try {
+    const search = msg.text.trim().toLowerCase();
+
     const result = await pool.query(
-      "SELECT * FROM movies WHERE name ILIKE $1",
-      [`%${msg.text.trim().toLowerCase()}%`]
+      "SELECT id, name FROM movies WHERE LOWER(name) LIKE $1",
+      [`%${search}%`]
     );
 
-    if (result.rows.length === 0)
+    if (!result.rows.length) {
       return bot.sendMessage(msg.chat.id, "❌ Movie not found.");
+    }
 
     const movie = result.rows[0];
 
-    bot.sendMessage(msg.chat.id, `🎬 ${movie.name}`, {
+    await bot.sendMessage(msg.chat.id, `🎬 ${movie.name}`, {
       reply_markup: {
-        inline_keyboard: [
-          [
-            {
-              text: "⬇ Download",
-              callback_data: `download_${movie.id}`
-            }
-          ]
-        ]
+        inline_keyboard: [[
+          {
+            text: "⬇ Download",
+            callback_data: `download_${movie.id}`
+          }
+        ]]
       }
     });
 
   } catch (err) {
-    console.error("Search error:", err.message);
-    bot.sendMessage(msg.chat.id, "❌ Error retrieving movie.");
+    console.error("SEARCH ERROR:", err.message);
+    bot.sendMessage(msg.chat.id, "❌ Search system error.");
   }
 });
 
@@ -107,18 +116,22 @@ bot.on("callback_query", async (query) => {
 
   try {
     const result = await pool.query(
-      "SELECT * FROM movies WHERE id=$1",
+      "SELECT file_id, caption FROM movies WHERE id=$1",
       [movieId]
     );
 
-    if (result.rows.length === 0)
+    if (!result.rows.length) {
       return bot.answerCallbackQuery(query.id, { text: "Movie not found." });
+    }
 
     const movie = result.rows[0];
 
+    // If stored as link
     if (movie.file_id.startsWith("http")) {
       await bot.sendMessage(query.message.chat.id, movie.file_id);
-    } else {
+    } 
+    // If stored as Telegram file_id
+    else {
       await bot.sendVideo(query.message.chat.id, movie.file_id, {
         caption: movie.caption || "🎬 Enjoy!"
       });
@@ -127,7 +140,7 @@ bot.on("callback_query", async (query) => {
     bot.answerCallbackQuery(query.id);
 
   } catch (err) {
-    console.error("Download error:", err.message);
+    console.error("DOWNLOAD ERROR:", err.message);
     bot.answerCallbackQuery(query.id, { text: "Error sending movie." });
   }
 });
@@ -144,7 +157,9 @@ bot.on("channel_post", async (msg) => {
       [movieName, msg.video.file_id, msg.caption]
     );
     console.log("📥 Saved from channel:", movieName);
-  } catch {}
+  } catch (err) {
+    console.log("Channel save skipped (maybe duplicate).");
+  }
 });
 
 // ===== ADMIN STATS =====
@@ -152,9 +167,12 @@ bot.onText(/\/stats/, async (msg) => {
   if (msg.from.id.toString() !== ADMIN)
     return bot.sendMessage(msg.chat.id, "❌ Admin only.");
 
-  const total = await pool.query("SELECT COUNT(*) FROM movies");
-
-  bot.sendMessage(msg.chat.id, `📊 Total Movies: ${total.rows[0].count}`);
+  try {
+    const total = await pool.query("SELECT COUNT(*) FROM movies");
+    bot.sendMessage(msg.chat.id, `📊 Total Movies: ${total.rows[0].count}`);
+  } catch (err) {
+    bot.sendMessage(msg.chat.id, "❌ Stats error.");
+  }
 });
 
 console.log("🚀 Advanced Bot Running...");
